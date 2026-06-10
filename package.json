@@ -1,0 +1,14 @@
+{
+  "name": "langsmith-sandbox-stream-repro",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "repro": "node repro.mjs"
+  },
+  "dependencies": {
+    "langsmith": "0.7.6",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {}
+}
