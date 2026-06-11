@@ -55,8 +55,8 @@ try {
 
   console.log("sandbox ready", { sandboxId: sandbox.id });
 
-  const handle = await sandbox.run(command, {
-    wait: false,
+  const collector = createStdoutCollector(recordCount);
+  const result = await sandbox.run(command, {
     commandId,
     timeout: timeoutSeconds,
     idleTimeout: -1,
@@ -66,20 +66,30 @@ try {
       REPRO_RECORD_COUNT: String(recordCount),
       REPRO_RECORD_BYTES: String(recordBytes),
     },
+    onStdout: (data) => {
+      collector.push(data);
+    },
   });
 
-  const stats = await consumeStdout(handle, recordCount);
-  const result = await handle.result;
+  const stats = collector.finish();
 
-  if (result.exitCode !== 0) {
+  const stderr = result.stderr ?? "";
+  if (result.exit_code !== 0) {
     throw new Error(
-      `sandbox command exited ${result.exitCode}: ${result.stderr.slice(0, 500)}`,
+      `sandbox command exited ${result.exit_code}: ${stderr.slice(0, 500)}`,
     );
   }
 
   if (stats.records !== recordCount) {
     throw new Error(
-      `record count mismatch: expected ${recordCount}, received ${stats.records}`,
+      [
+        "record count mismatch",
+        `expectedRecords=${recordCount}`,
+        `receivedRecords=${stats.records}`,
+        `missingRecords=${recordCount - stats.records}`,
+        `stdoutChunks=${stats.stdoutChunks}`,
+        `stdoutBytes=${stats.stdoutBytes}`,
+      ].join(" "),
     );
   }
 
@@ -111,85 +121,73 @@ try {
   }
 }
 
-async function consumeStdout(handle, expectedRecords) {
-  let expectedOffset = 0;
+function createStdoutCollector(expectedRecords) {
   let stdoutBytes = 0;
   let stdoutChunks = 0;
   let expectedSeq = 0;
   let pending = "";
 
-  for await (const chunk of handle) {
-    if (chunk.stream !== "stdout") {
-      continue;
-    }
-
-    stdoutChunks += 1;
-    const bytes = Buffer.byteLength(chunk.data);
-
-    if (chunk.offset !== expectedOffset) {
-      throw new Error(
-        [
-          "stdout offset gap",
-          `expectedOffset=${expectedOffset}`,
-          `receivedOffset=${chunk.offset}`,
-          `missingBytes=${chunk.offset - expectedOffset}`,
-          `chunkBytes=${bytes}`,
-          `stdoutChunks=${stdoutChunks}`,
-          `stdoutBytes=${stdoutBytes}`,
-          `records=${expectedSeq}`,
-        ].join(" "),
-      );
-    }
-
-    expectedOffset += bytes;
-    stdoutBytes += bytes;
-    pending += chunk.data;
-
-    let newlineIndex;
-    while ((newlineIndex = pending.indexOf("\n")) !== -1) {
-      const line = pending.slice(0, newlineIndex);
-      pending = pending.slice(newlineIndex + 1);
-      if (line.length === 0) {
-        continue;
-      }
-
-      let record;
-      try {
-        record = JSON.parse(line);
-      } catch (error) {
-        throw new Error(
-          `malformed JSONL at seq=${expectedSeq}: ${error.message}; line prefix=${line.slice(0, 120)}`,
-        );
-      }
-
-      if (record.seq !== expectedSeq) {
-        throw new Error(
-          `sequence gap: expected seq=${expectedSeq}, received seq=${record.seq}`,
-        );
-      }
-
-      expectedSeq += 1;
-
-      if (expectedSeq % 10_000 === 0 || expectedSeq === expectedRecords) {
-        console.log("stream progress", {
-          records: expectedSeq,
-          stdoutChunks,
-          stdoutBytes,
-        });
-      }
-    }
-  }
-
-  if (pending.length > 0) {
-    throw new Error(
-      `stdout ended with partial line: pendingBytes=${Buffer.byteLength(pending)}`,
-    );
-  }
-
   return {
-    stdoutChunks,
-    stdoutBytes,
-    records: expectedSeq,
+    push(data) {
+      stdoutChunks += 1;
+      stdoutBytes += Buffer.byteLength(data);
+      pending += data;
+
+      let newlineIndex;
+      while ((newlineIndex = pending.indexOf("\n")) !== -1) {
+        const line = pending.slice(0, newlineIndex);
+        pending = pending.slice(newlineIndex + 1);
+        if (line.length === 0) {
+          continue;
+        }
+
+        let record;
+        try {
+          record = JSON.parse(line);
+        } catch (error) {
+          throw new Error(
+            `malformed JSONL at seq=${expectedSeq}: ${error.message}; line prefix=${line.slice(0, 120)}`,
+          );
+        }
+
+        if (record.seq !== expectedSeq) {
+          throw new Error(
+            [
+              "sequence gap",
+              `expectedSeq=${expectedSeq}`,
+              `receivedSeq=${record.seq}`,
+              `missingRecords=${record.seq - expectedSeq}`,
+              `stdoutChunks=${stdoutChunks}`,
+              `stdoutBytes=${stdoutBytes}`,
+            ].join(" "),
+          );
+        }
+
+        expectedSeq += 1;
+
+        if (expectedSeq % 10_000 === 0 || expectedSeq === expectedRecords) {
+          console.log("stream progress", {
+            records: expectedSeq,
+            stdoutChunks,
+            stdoutBytes,
+          });
+        }
+      }
+    },
+
+    finish() {
+      if (pending.length > 0) {
+        throw new Error(
+          `stdout ended with partial line: pendingBytes=${Buffer.byteLength(pending)}`,
+        );
+      }
+
+      return {
+        stdoutChunks,
+        stdoutBytes,
+        records: expectedSeq,
+      };
+    },
   };
 }
 

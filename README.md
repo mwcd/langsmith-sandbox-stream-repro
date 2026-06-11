@@ -1,6 +1,7 @@
 # LangSmith Sandbox Stream Repro
 
-Minimal repro for non-contiguous LangSmith sandbox stdout streaming.
+Minimal repro for LangSmith sandbox stdout data loss through the JS SDK
+`onStdout` callback path.
 
 ## Setup
 
@@ -22,11 +23,11 @@ LANGSMITH_SANDBOX_TIMEOUT_SECONDS=300 pnpm repro
 KEEP_SANDBOX=1 pnpm repro
 ```
 
-The script checks:
+The script streams JSONL records through `sandbox.run(..., { onStdout })` to
+match Console's usage. It checks:
 
-- stdout chunk offsets are contiguous
 - JSONL sequence numbers are contiguous
 - final record count matches the expected count
 
-On failure, it prints the sandbox ID, command ID, expected offset, received
-offset, and missing bytes when available.
+On failure, it prints the sandbox ID, command ID, chunk count, byte count, and
+the first observed sequence gap or final record count mismatch.
